@@ -143,17 +143,13 @@ async function ollamaChat({ model, messages, num_ctx }) {
   return data.message ? data.message.content : '';
 }
 
-// นับ token จริงด้วย tokenizer ของโมเดล (ยิงข้อความเข้าไปแล้วอ่าน prompt_eval_count)
-async function countTokens(model, text) {
-  if (!text || !text.trim()) return 0;
-  try {
-    const r = await fetch(OLLAMA + '/api/generate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, prompt: text, stream: false, options: { num_predict: 0 } })
-    });
-    const d = await r.json();
-    return d.prompt_eval_count || 0;
-  } catch { return 0; }
+// ประมาณจำนวน token แบบเร็ว (คำนวณในเครื่องทันที ไม่ต้องเรียกโมเดล — สำคัญมากบน CPU)
+// ไทย tokenizer ซอยละเอียด ~1 token/2 อักขระ, อังกฤษ/อื่นๆ ~1 token/4 อักขระ
+function estimateTokens(text) {
+  if (!text) return 0;
+  const thai = (text.match(/[฀-๿]/g) || []).length;
+  const rest = text.length - thai;
+  return Math.round(thai / 2 + rest / 4);
 }
 
 // =================== ROUTER ===================
@@ -245,7 +241,7 @@ const server = http.createServer(async (req, res) => {
         for (const f of files) {
           const full = path.join(dir, f);
           const content = fs.readFileSync(full, 'utf8');
-          const tokens = await countTokens(s.model, content);
+          const tokens = estimateTokens(content);
           totalTokens += tokens;
           info.push({ name: f, size: fs.statSync(full).size, tokens });
         }

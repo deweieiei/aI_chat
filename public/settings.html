@@ -94,19 +94,19 @@ async function saveSettings(){
 }
 
 async function loadMemory(){
-  document.getElementById('memSummary').textContent = 'กำลังนับ token...';
+  document.getElementById('memSummary').textContent = 'กำลังโหลด...';
   const r = await fetch('/api/memory', { headers:H });
   const d = await r.json();
   const total = d.totalTokens || 0;
   const ctx = d.num_ctx || numCtx;
   const pct = Math.min(100, Math.round(total / ctx * 100));
   document.getElementById('memSummary').textContent =
-    `มี ${d.files.length} ไฟล์ · รวม ${total.toLocaleString()} token`;
+    `มี ${d.files.length} ไฟล์ · รวมประมาณ ~${total.toLocaleString()} token`;
   document.getElementById('ctxBar').style.width = pct + '%';
   document.getElementById('ctxBar').style.background =
     pct > 85 ? 'linear-gradient(90deg,#ff9f43,#ff6b6b)' : 'linear-gradient(90deg,var(--accent2),var(--accent))';
   document.getElementById('ctxLabel').textContent =
-    `ใช้ ${total.toLocaleString()} / ${ctx.toLocaleString()} token ของบริบท (${pct}%)` +
+    `ใช้ ~${total.toLocaleString()} / ${ctx.toLocaleString()} token ของบริบท (${pct}%)` +
     (pct > 85 ? ' ⚠️ ความทรงจำเริ่มเต็ม ควรลบไฟล์เก่าหรือเพิ่ม num_ctx' : '');
 
   const listEl = document.getElementById('fileList');
@@ -115,7 +115,7 @@ async function loadMemory(){
   d.files.forEach(f => {
     const row = document.createElement('div');
     row.className = 'file-row';
-    row.innerHTML = `<div>📄 ${f.name}<span class="token-pill">${f.tokens.toLocaleString()} token</span>
+    row.innerHTML = `<div>📄 ${f.name}<span class="token-pill">~${f.tokens.toLocaleString()} token</span>
       <div class="meta">${f.size.toLocaleString()} bytes</div></div>
       <div class="row"></div>`;
     const btns = row.querySelector('.row');
