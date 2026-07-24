@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI ส่วนตัว — เลือกโปรไฟล์</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>🧠 AI ส่วนตัว</h1>
+  <p class="sub">เลือกโปรไฟล์เพื่อเริ่มคุย — แต่ละคนมีความทรงจำแยกกัน</p>
+
+  <div class="grid" id="grid"></div>
+
+  <!-- Modal: login -->
+  <div class="modal-bg" id="loginModal">
+    <div class="modal">
+      <h3 id="loginName">เข้าสู่ระบบ</h3>
+      <p class="sub" style="margin:2px 0 8px">ใส่รหัสผ่านของโปรไฟล์นี้</p>
+      <input type="password" id="loginPass" placeholder="รหัสผ่าน" autocomplete="current-password">
+      <div class="err" id="loginErr"></div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn" id="loginBtn" style="flex:1">เข้าสู่ระบบ</button>
+        <button class="btn ghost" onclick="closeModal('loginModal')">ยกเลิก</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: create -->
+  <div class="modal-bg" id="createModal">
+    <div class="modal">
+      <h3>สร้างโปรไฟล์ใหม่</h3>
+      <label>ชื่อโปรไฟล์</label>
+      <input type="text" id="newName" placeholder="เช่น ดิว">
+      <label>ตั้งรหัสผ่าน (อย่างน้อย 4 ตัว)</label>
+      <input type="password" id="newPass" placeholder="รหัสผ่าน" autocomplete="new-password">
+      <div class="err" id="createErr"></div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn" id="createBtn" style="flex:1">สร้าง</button>
+        <button class="btn ghost" onclick="closeModal('createModal')">ยกเลิก</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let selected = null;
+function closeModal(id){ document.getElementById(id).classList.remove('show'); }
+function openModal(id){ document.getElementById(id).classList.add('show'); }
+
+async function load(){
+  const r = await fetch('/api/profiles');
+  const { profiles } = await r.json();
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  profiles.forEach(p => {
+    const el = document.createElement('div');
+    el.className = 'card';
+    const initial = (p.displayName || p.name).trim().charAt(0);
+    el.innerHTML = `<div class="avatar">${initial}</div><div>${p.displayName}</div>`;
+    el.onclick = () => {
+      selected = p.name;
+      document.getElementById('loginName').textContent = 'เข้าสู่ระบบ: ' + p.displayName;
+      document.getElementById('loginPass').value = '';
+      document.getElementById('loginErr').textContent = '';
+      openModal('loginModal');
+      setTimeout(()=>document.getElementById('loginPass').focus(), 50);
+    };
+    grid.appendChild(el);
+  });
+  const add = document.createElement('div');
+  add.className = 'card add';
+  add.innerHTML = '<div class="plus">+</div><div>สร้างโปรไฟล์ใหม่</div>';
+  add.onclick = () => { document.getElementById('createErr').textContent=''; openModal('createModal'); };
+  grid.appendChild(add);
+}
+
+async function doLogin(){
+  const password = document.getElementById('loginPass').value;
+  const r = await fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ name: selected, password }) });
+  const d = await r.json();
+  if (!r.ok) { document.getElementById('loginErr').textContent = d.error || 'เข้าสู่ระบบไม่สำเร็จ'; return; }
+  localStorage.setItem('token', d.token);
+  localStorage.setItem('profile', d.name);
+  localStorage.setItem('displayName', d.displayName);
+  location.href = '/chat';
+}
+
+async function doCreate(){
+  const name = document.getElementById('newName').value;
+  const password = document.getElementById('newPass').value;
+  const r = await fetch('/api/profiles', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ name, password }) });
+  const d = await r.json();
+  if (!r.ok) { document.getElementById('createErr').textContent = d.error || 'สร้างไม่สำเร็จ'; return; }
+  closeModal('createModal');
+  await load();
+}
+
+document.getElementById('loginBtn').onclick = doLogin;
+document.getElementById('createBtn').onclick = doCreate;
+document.getElementById('loginPass').addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
+document.getElementById('newPass').addEventListener('keydown', e => { if(e.key==='Enter') doCreate(); });
+load();
+</script>
+</body>
+</html>

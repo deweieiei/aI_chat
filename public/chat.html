@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI ส่วนตัว — แชท</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="topbar">
+  <div class="brand">🧠 AI ส่วนตัว <small id="who"></small></div>
+  <div class="links">
+    <a href="/settings">⚙️ ตั้งค่า</a>
+    <a href="#" id="logout">ออกจากระบบ</a>
+  </div>
+</div>
+
+<div class="chat-wrap">
+  <div class="messages" id="messages"></div>
+  <div class="composer">
+    <div class="inner">
+      <textarea id="input" placeholder="พิมพ์ข้อความ... (Enter ส่ง, Shift+Enter ขึ้นบรรทัดใหม่)" rows="1"></textarea>
+      <button class="btn" id="send">ส่ง</button>
+    </div>
+    <div class="hint">AI จะจดสิ่งสำคัญลงสมุดความทรงจำให้อัตโนมัติ</div>
+  </div>
+</div>
+
+<script>
+const token = localStorage.getItem('token');
+const displayName = localStorage.getItem('displayName') || '';
+if (!token) location.href = '/';
+document.getElementById('who').textContent = '— ' + displayName;
+
+const history = [];  // {role, content}
+const messagesEl = document.getElementById('messages');
+const inputEl = document.getElementById('input');
+
+document.getElementById('logout').onclick = (e) => {
+  e.preventDefault();
+  localStorage.clear();
+  location.href = '/';
+};
+
+function addBubble(role, text){
+  const div = document.createElement('div');
+  div.className = 'msg ' + (role === 'user' ? 'user' : 'ai');
+  div.innerHTML = `<div class="who">${role==='user'?'🙂':'🤖'}</div><div><div class="bubble"></div></div>`;
+  div.querySelector('.bubble').textContent = text;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return div;
+}
+
+async function send(){
+  const text = inputEl.value.trim();
+  if (!text) return;
+  inputEl.value = '';
+  inputEl.style.height = 'auto';
+  addBubble('user', text);
+  history.push({ role:'user', content:text });
+
+  const thinking = addBubble('ai', 'กำลังคิด...');
+  document.getElementById('send').disabled = true;
+
+  try {
+    const r = await fetch('/api/chat', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+token },
+      body: JSON.stringify({ messages: history })
+    });
+    if (r.status === 401) { localStorage.clear(); location.href='/'; return; }
+    const d = await r.json();
+    if (!r.ok) { thinking.querySelector('.bubble').textContent = '⚠️ ' + (d.error||'เกิดข้อผิดพลาด'); return; }
+    thinking.querySelector('.bubble').textContent = d.reply;
+    if (d.jotted > 0) {
+      const b = document.createElement('div');
+      b.className = 'jot-badge';
+      b.textContent = '📝 จดความทรงจำใหม่ ' + d.jotted + ' รายการ';
+      thinking.querySelector('.bubble').parentElement.appendChild(b);
+    }
+    history.push({ role:'assistant', content:d.reply });
+  } catch(e) {
+    thinking.querySelector('.bubble').textContent = '⚠️ เชื่อมต่อไม่ได้: ' + e.message;
+  } finally {
+    document.getElementById('send').disabled = false;
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+}
+
+document.getElementById('send').onclick = send;
+inputEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+inputEl.addEventListener('input', () => {
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
+});
+
+addBubble('ai', 'สวัสดีครับ ' + displayName + ' 👋 มีอะไรให้ช่วยไหมครับ?');
+</script>
+</body>
+</html>

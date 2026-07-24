@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI ส่วนตัว — ตั้งค่า</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="topbar">
+  <div class="brand">⚙️ ตั้งค่า <small id="who"></small></div>
+  <div class="links">
+    <a href="/chat">← กลับไปแชท</a>
+    <a href="#" id="logout">ออกจากระบบ</a>
+  </div>
+</div>
+
+<div class="wrap">
+  <!-- การตั้งค่าโมเดล -->
+  <div class="panel">
+    <h3 style="margin-top:0">โมเดล & บริบท</h3>
+    <label>โมเดล AI</label>
+    <select id="model"></select>
+    <label>ขนาดบริบท (num_ctx) — ยิ่งมากยิ่งจำได้เยอะ แต่ใช้ VRAM/ช้าขึ้น</label>
+    <input type="number" id="num_ctx" min="1024" max="40960" step="1024">
+    <label>บุคลิก / คำสั่งระบบ (system prompt)</label>
+    <textarea id="systemPrompt"></textarea>
+    <div class="row" style="margin-top:14px">
+      <button class="btn" id="saveBtn">บันทึกการตั้งค่า</button>
+      <span class="err" id="saveMsg" style="color:var(--accent2)"></span>
+    </div>
+  </div>
+
+  <!-- ความทรงจำ -->
+  <div class="panel">
+    <h3 style="margin-top:0">📓 สมุดความทรงจำ</h3>
+    <p class="sub" id="memSummary">กำลังโหลด...</p>
+    <div class="bar"><i id="ctxBar" style="width:0%"></i></div>
+    <p class="meta" style="color:var(--muted);font-size:13px" id="ctxLabel"></p>
+    <div id="fileList"></div>
+
+    <div class="viewer" id="viewer" style="display:none">
+      <label id="viewerName"></label>
+      <textarea id="viewerContent"></textarea>
+      <div class="row" style="margin-top:10px">
+        <button class="btn sm" id="saveFile">บันทึกไฟล์</button>
+        <button class="btn ghost sm" id="closeViewer">ปิด</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const token = localStorage.getItem('token');
+const displayName = localStorage.getItem('displayName') || '';
+if (!token) location.href = '/';
+document.getElementById('who').textContent = '— ' + displayName;
+const H = { 'Content-Type':'application/json', 'Authorization':'Bearer '+token };
+let numCtx = 4096;
+
+document.getElementById('logout').onclick = e => { e.preventDefault(); localStorage.clear(); location.href='/'; };
+
+async function loadSettings(){
+  const [sRes, mRes] = await Promise.all([
+    fetch('/api/settings', { headers:H }),
+    fetch('/api/models', { headers:H })
+  ]);
+  if (sRes.status === 401) { localStorage.clear(); location.href='/'; return; }
+  const s = await sRes.json();
+  const { models } = await mRes.json();
+  numCtx = s.num_ctx;
+  const sel = document.getElementById('model');
+  sel.innerHTML = '';
+  const list = models.length ? models : [s.model];
+  list.forEach(m => {
+    const o = document.createElement('option'); o.value=m; o.textContent=m;
+    if (m===s.model) o.selected=true; sel.appendChild(o);
+  });
+  document.getElementById('num_ctx').value = s.num_ctx;
+  document.getElementById('systemPrompt').value = s.systemPrompt;
+}
+
+async function saveSettings(){
+  const body = {
+    model: document.getElementById('model').value,
+    num_ctx: document.getElementById('num_ctx').value,
+    systemPrompt: document.getElementById('systemPrompt').value
+  };
+  const r = await fetch('/api/settings', { method:'POST', headers:H, body: JSON.stringify(body) });
+  const msg = document.getElementById('saveMsg');
+  if (r.ok) { msg.textContent='✓ บันทึกแล้ว'; numCtx=parseInt(body.num_ctx); loadMemory(); }
+  else msg.textContent='บันทึกไม่สำเร็จ';
+  setTimeout(()=>msg.textContent='', 2500);
+}
+
+async function loadMemory(){
+  document.getElementById('memSummary').textContent = 'กำลังนับ token...';
+  const r = await fetch('/api/memory', { headers:H });
+  const d = await r.json();
+  const total = d.totalTokens || 0;
+  const ctx = d.num_ctx || numCtx;
+  const pct = Math.min(100, Math.round(total / ctx * 100));
+  document.getElementById('memSummary').textContent =
+    `มี ${d.files.length} ไฟล์ · รวม ${total.toLocaleString()} token`;
+  document.getElementById('ctxBar').style.width = pct + '%';
+  document.getElementById('ctxBar').style.background =
+    pct > 85 ? 'linear-gradient(90deg,#ff9f43,#ff6b6b)' : 'linear-gradient(90deg,var(--accent2),var(--accent))';
+  document.getElementById('ctxLabel').textContent =
+    `ใช้ ${total.toLocaleString()} / ${ctx.toLocaleString()} token ของบริบท (${pct}%)` +
+    (pct > 85 ? ' ⚠️ ความทรงจำเริ่มเต็ม ควรลบไฟล์เก่าหรือเพิ่ม num_ctx' : '');
+
+  const listEl = document.getElementById('fileList');
+  listEl.innerHTML = '';
+  if (!d.files.length) { listEl.innerHTML = '<p class="meta" style="color:var(--muted)">ยังไม่มีไฟล์ความทรงจำ</p>'; return; }
+  d.files.forEach(f => {
+    const row = document.createElement('div');
+    row.className = 'file-row';
+    row.innerHTML = `<div>📄 ${f.name}<span class="token-pill">${f.tokens.toLocaleString()} token</span>
+      <div class="meta">${f.size.toLocaleString()} bytes</div></div>
+      <div class="row"></div>`;
+    const btns = row.querySelector('.row');
+    const view = document.createElement('button'); view.className='btn ghost sm'; view.textContent='ดู/แก้';
+    view.onclick = () => openFile(f.name);
+    const del = document.createElement('button'); del.className='btn danger'; del.textContent='ลบ';
+    del.onclick = () => deleteFile(f.name);
+    btns.append(view, del);
+    listEl.appendChild(row);
+  });
+}
+
+async function openFile(name){
+  const r = await fetch('/api/memory/file?name=' + encodeURIComponent(name), { headers:H });
+  const d = await r.json();
+  document.getElementById('viewer').style.display = 'block';
+  document.getElementById('viewerName').textContent = 'ไฟล์: ' + d.name;
+  document.getElementById('viewerContent').value = d.content;
+  document.getElementById('saveFile').onclick = async () => {
+    await fetch('/api/memory/file', { method:'POST', headers:H,
+      body: JSON.stringify({ name: d.name, content: document.getElementById('viewerContent').value }) });
+    loadMemory();
+    document.getElementById('viewer').style.display='none';
+  };
+  document.getElementById('viewer').scrollIntoView({ behavior:'smooth' });
+}
+document.getElementById('closeViewer').onclick = () => document.getElementById('viewer').style.display='none';
+
+async function deleteFile(name){
+  if (!confirm('ลบไฟล์ "' + name + '" ถาวร?')) return;
+  await fetch('/api/memory/file?name=' + encodeURIComponent(name), { method:'DELETE', headers:H });
+  loadMemory();
+}
+
+document.getElementById('saveBtn').onclick = saveSettings;
+loadSettings().then(loadMemory);
+</script>
+</body>
+</html>

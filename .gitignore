@@ -1,0 +1,10 @@
+# ข้อมูลผู้ใช้ + รหัสผ่าน — ห้าม push ขึ้น git เด็ดขาด
+profiles/
+
+# node
+node_modules/
+npm-debug.log*
+
+# ระบบ
+.DS_Store
+Thumbs.db
