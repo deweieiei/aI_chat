@@ -15,14 +15,30 @@
   </div>
 </div>
 
-<div class="chat-wrap">
-  <div class="messages" id="messages"></div>
-  <div class="composer">
-    <div class="inner">
-      <textarea id="input" placeholder="พิมพ์ข้อความ... (Enter ส่ง, Shift+Enter ขึ้นบรรทัดใหม่)" rows="1"></textarea>
-      <button class="btn" id="send">ส่ง</button>
+<div class="layout">
+  <!-- แถบด้านข้าง: รายการแชต -->
+  <div class="sidebar">
+    <button class="btn newchat" id="newChat">+ แชตใหม่</button>
+    <div class="chat-list" id="chatList"></div>
+  </div>
+
+  <!-- พื้นที่แชต -->
+  <div class="chat-main">
+    <div class="chat-header">
+      <span class="ctitle" id="chatTitle">—</span>
+      <span class="toggle" id="memToggle" title="ถ้าปิด จะไม่อ่านสมุดความทรงจำในแชตนี้ ช่วยประหยัด token">
+        📓 อ่านสมุดความทรงจำ
+        <span class="switch" id="memSwitch"><i></i></span>
+      </span>
     </div>
-    <div class="hint">AI จะจดสิ่งสำคัญลงสมุดความทรงจำให้อัตโนมัติ</div>
+    <div class="messages" id="messages"></div>
+    <div class="composer">
+      <div class="inner">
+        <textarea id="input" placeholder="พิมพ์ข้อความ... (Enter ส่ง, Shift+Enter ขึ้นบรรทัดใหม่)" rows="1"></textarea>
+        <button class="btn" id="send">ส่ง</button>
+      </div>
+      <div class="hint" id="hint">เปิดสวิตช์ = AI จำเรื่องคุณได้ (ใช้ token เพิ่ม) · ปิด = คุยเปล่าๆ ประหยัด token</div>
+    </div>
   </div>
 </div>
 
@@ -31,16 +47,18 @@ const token = localStorage.getItem('token');
 const displayName = localStorage.getItem('displayName') || '';
 if (!token) location.href = '/';
 document.getElementById('who').textContent = '— ' + displayName;
+const H = { 'Content-Type':'application/json', 'Authorization':'Bearer '+token };
 
-const history = [];  // {role, content}
 const messagesEl = document.getElementById('messages');
 const inputEl = document.getElementById('input');
+let currentChat = null;   // { id, title, useMemory, messages }
 
-document.getElementById('logout').onclick = (e) => {
-  e.preventDefault();
-  localStorage.clear();
-  location.href = '/';
-};
+document.getElementById('logout').onclick = e => { e.preventDefault(); localStorage.clear(); location.href='/'; };
+
+function api(url, opt={}) { return fetch(url, { headers:H, ...opt }).then(async r => {
+  if (r.status === 401) { localStorage.clear(); location.href='/'; throw new Error('unauth'); }
+  return r.json();
+}); }
 
 function addBubble(role, text){
   const div = document.createElement('div');
@@ -52,34 +70,79 @@ function addBubble(role, text){
   return div;
 }
 
+// ---------- รายการแชต ----------
+async function loadChatList(){
+  const { chats } = await api('/api/chats');
+  const listEl = document.getElementById('chatList');
+  listEl.innerHTML = '';
+  chats.forEach(c => {
+    const el = document.createElement('div');
+    el.className = 'chat-item' + (currentChat && c.id === currentChat.id ? ' active' : '');
+    el.innerHTML = `<span class="mem-dot">${c.useMemory ? '📓' : '💬'}</span>
+      <span class="title">${c.title || 'แชตใหม่'}</span><span class="del" title="ลบแชต">×</span>`;
+    el.querySelector('.title').onclick = () => openChat(c.id);
+    el.querySelector('.mem-dot').onclick = () => openChat(c.id);
+    el.querySelector('.del').onclick = (e) => { e.stopPropagation(); delChat(c.id); };
+    listEl.appendChild(el);
+  });
+}
+
+// ---------- เปิดแชต ----------
+async function openChat(id){
+  const { chat } = await api('/api/chats/get?id=' + encodeURIComponent(id));
+  currentChat = chat;
+  document.getElementById('chatTitle').textContent = chat.title || 'แชตใหม่';
+  setMemSwitch(chat.useMemory !== false);
+  messagesEl.innerHTML = '';
+  if (!chat.messages.length) addBubble('ai', 'สวัสดีครับ ' + displayName + ' 👋 มีอะไรให้ช่วยไหมครับ?');
+  else chat.messages.forEach(m => addBubble(m.role === 'user' ? 'user' : 'ai', m.content));
+  loadChatList();
+}
+
+async function newChat(){
+  const { chat } = await api('/api/chats', { method:'POST', body: JSON.stringify({ useMemory: true }) });
+  await openChat(chat.id);
+  inputEl.focus();
+}
+
+async function delChat(id){
+  if (!confirm('ลบแชตนี้ถาวร?')) return;
+  await api('/api/chats/delete', { method:'POST', body: JSON.stringify({ id }) });
+  if (currentChat && currentChat.id === id) currentChat = null;
+  await initChats();
+}
+
+// ---------- สวิตช์อ่านความทรงจำ ----------
+function setMemSwitch(on){
+  document.getElementById('memSwitch').classList.toggle('on', on);
+}
+document.getElementById('memToggle').onclick = async () => {
+  if (!currentChat) return;
+  const on = !document.getElementById('memSwitch').classList.contains('on');
+  setMemSwitch(on);
+  currentChat.useMemory = on;
+  await api('/api/chats/update', { method:'POST', body: JSON.stringify({ id: currentChat.id, useMemory: on }) });
+  loadChatList();
+};
+
+// ---------- ส่งข้อความ ----------
 async function send(){
   const text = inputEl.value.trim();
-  if (!text) return;
-  inputEl.value = '';
-  inputEl.style.height = 'auto';
+  if (!text || !currentChat) return;
+  inputEl.value = ''; inputEl.style.height = 'auto';
   addBubble('user', text);
-  history.push({ role:'user', content:text });
-
   const thinking = addBubble('ai', 'กำลังคิด...');
   document.getElementById('send').disabled = true;
-
   try {
-    const r = await fetch('/api/chat', {
-      method:'POST',
-      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+token },
-      body: JSON.stringify({ messages: history })
-    });
-    if (r.status === 401) { localStorage.clear(); location.href='/'; return; }
-    const d = await r.json();
-    if (!r.ok) { thinking.querySelector('.bubble').textContent = '⚠️ ' + (d.error||'เกิดข้อผิดพลาด'); return; }
+    const d = await api('/api/chat', { method:'POST', body: JSON.stringify({ chatId: currentChat.id, content: text }) });
+    if (d.error) { thinking.querySelector('.bubble').textContent = '⚠️ ' + d.error; return; }
     thinking.querySelector('.bubble').textContent = d.reply;
     if (d.jotted > 0) {
       const b = document.createElement('div');
-      b.className = 'jot-badge';
-      b.textContent = '📝 จดความทรงจำใหม่ ' + d.jotted + ' รายการ';
+      b.className = 'jot-badge'; b.textContent = '📝 จดความทรงจำใหม่ ' + d.jotted + ' รายการ';
       thinking.querySelector('.bubble').parentElement.appendChild(b);
     }
-    history.push({ role:'assistant', content:d.reply });
+    loadChatList();  // อัปเดตชื่อแชต (ตั้งจากข้อความแรก)
   } catch(e) {
     thinking.querySelector('.bubble').textContent = '⚠️ เชื่อมต่อไม่ได้: ' + e.message;
   } finally {
@@ -89,15 +152,17 @@ async function send(){
 }
 
 document.getElementById('send').onclick = send;
-inputEl.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-});
-inputEl.addEventListener('input', () => {
-  inputEl.style.height = 'auto';
-  inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
-});
+document.getElementById('newChat').onclick = newChat;
+inputEl.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+inputEl.addEventListener('input', () => { inputEl.style.height = 'auto'; inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px'; });
 
-addBubble('ai', 'สวัสดีครับ ' + displayName + ' 👋 มีอะไรให้ช่วยไหมครับ?');
+// ---------- เริ่มต้น: มีแชตล่าสุดก็เปิด ไม่มีก็สร้างใหม่ ----------
+async function initChats(){
+  const { chats } = await api('/api/chats');
+  if (chats.length) await openChat(chats[0].id);
+  else await newChat();
+}
+initChats();
 </script>
 </body>
 </html>

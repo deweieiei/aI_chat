@@ -70,6 +70,33 @@ function jotMemory(n, text) {
   fs.appendFileSync(path.join(dir, 'notes.md'), `- (${stamp}) ${text.trim()}\n`, 'utf8');
 }
 
+// ---------- helper: ห้องแชต (แต่ละโปรไฟล์มีหลายแชต) ----------
+const chatsDir = n => path.join(profileDir(n), 'chats');
+function listChats(n) {
+  const dir = chatsDir(n);
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).filter(f => f.endsWith('.json')).map(f => {
+    const c = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+    return { id: c.id, title: c.title, useMemory: c.useMemory, updatedAt: c.updatedAt, count: (c.messages || []).length };
+  }).sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+}
+function readChat(n, id) {
+  const f = path.join(chatsDir(n), safeFile(id) + '.json');
+  if (!f.startsWith(chatsDir(n)) || !fs.existsSync(f)) return null;
+  return JSON.parse(fs.readFileSync(f, 'utf8'));
+}
+function writeChat(n, c) {
+  fs.mkdirSync(chatsDir(n), { recursive: true });
+  c.updatedAt = new Date().toISOString();
+  fs.writeFileSync(path.join(chatsDir(n), safeFile(c.id) + '.json'), JSON.stringify(c, null, 2), 'utf8');
+}
+function deleteChat(n, id) {
+  const f = path.join(chatsDir(n), safeFile(id) + '.json');
+  if (f.startsWith(chatsDir(n)) && fs.existsSync(f)) { fs.unlinkSync(f); return true; }
+  return false;
+}
+function newChatId() { return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
 // ---------- helper: HTTP ----------
 function readBody(req) {
   return new Promise((resolve) => {
@@ -248,32 +275,73 @@ const server = http.createServer(async (req, res) => {
         return sendJSON(res, 200, { ok: true });
       }
 
-      // แชท
+      // ===== ห้องแชต =====
+      if (p === '/api/chats' && req.method === 'GET') {
+        return sendJSON(res, 200, { chats: listChats(me) });
+      }
+      if (p === '/api/chats' && req.method === 'POST') {   // สร้างแชตใหม่
+        const b = await readBody(req);
+        const chat = { id: newChatId(), title: 'แชตใหม่', useMemory: b.useMemory !== false, messages: [], createdAt: new Date().toISOString() };
+        writeChat(me, chat);
+        return sendJSON(res, 200, { chat });
+      }
+      if (p === '/api/chats/get' && req.method === 'GET') {
+        const c = readChat(me, url.searchParams.get('id'));
+        if (!c) return sendJSON(res, 404, { error: 'ไม่พบแชต' });
+        return sendJSON(res, 200, { chat: c });
+      }
+      if (p === '/api/chats/update' && req.method === 'POST') {  // เปลี่ยนชื่อ / สลับอ่านความทรงจำ
+        const b = await readBody(req);
+        const c = readChat(me, b.id);
+        if (!c) return sendJSON(res, 404, { error: 'ไม่พบแชต' });
+        if (typeof b.title === 'string') c.title = b.title.slice(0, 60);
+        if (typeof b.useMemory === 'boolean') c.useMemory = b.useMemory;
+        writeChat(me, c);
+        return sendJSON(res, 200, { ok: true });
+      }
+      if (p === '/api/chats/delete' && req.method === 'POST') {
+        const b = await readBody(req);
+        deleteChat(me, b.id);
+        return sendJSON(res, 200, { ok: true });
+      }
+
+      // แชท: ส่งข้อความในห้องแชตหนึ่งๆ (เก็บประวัติฝั่งเซิร์ฟเวอร์)
       if (p === '/api/chat' && req.method === 'POST') {
-        const { messages } = await readBody(req);
-        if (!Array.isArray(messages)) return sendJSON(res, 400, { error: 'messages ต้องเป็น array' });
+        const { chatId, content } = await readBody(req);
+        const chat = readChat(me, chatId);
+        if (!chat) return sendJSON(res, 404, { error: 'ไม่พบแชต' });
+        if (!content || !String(content).trim()) return sendJSON(res, 400, { error: 'ข้อความว่าง' });
+        chat.messages.push({ role: 'user', content: String(content) });
+
         const s = readSettings(me);
-        const memory = loadMemory(me);
-        const sys = [
-          s.systemPrompt,
-          memory ? `\n# ความทรงจำเกี่ยวกับผู้ใช้ (จากสมุดบันทึกส่วนตัว)\n${memory}` : '',
-          `\n# วิธีจดความทรงจำ\nตอบคำถามผู้ใช้ตามปกติเสมอ (ต้องมีข้อความตอบทุกครั้ง ห้ามตอบว่างเปล่า) จากนั้น ถ้าผู้ใช้บอกข้อมูลสำคัญที่ควรจำระยะยาว (ชื่อ ความชอบ เป้าหมาย เรื่องส่วนตัว) ให้เพิ่มบรรทัดรูปแบบ [[JOT: ข้อความที่ต้องจำ]] ต่อท้ายคำตอบ ระบบจะบันทึกลงสมุดให้เอง ผู้ใช้จะไม่เห็นบรรทัดนี้ อย่าจดเรื่องทั่วไปที่ไม่สำคัญ`
-        ].join('\n');
+        const useMem = chat.useMemory !== false;
+        const memory = useMem ? loadMemory(me) : '';
+        const sys = useMem
+          ? [
+              s.systemPrompt,
+              memory ? `\n# ความทรงจำเกี่ยวกับผู้ใช้ (จากสมุดบันทึกส่วนตัว)\n${memory}` : '',
+              `\n# วิธีจดความทรงจำ\nตอบคำถามผู้ใช้ตามปกติเสมอ (ต้องมีข้อความตอบทุกครั้ง ห้ามตอบว่างเปล่า) จากนั้น ถ้าผู้ใช้บอกข้อมูลสำคัญที่ควรจำระยะยาว (ชื่อ ความชอบ เป้าหมาย เรื่องส่วนตัว) ให้เพิ่มบรรทัดรูปแบบ [[JOT: ข้อความที่ต้องจำ]] ต่อท้ายคำตอบ ระบบจะบันทึกลงสมุดให้เอง ผู้ใช้จะไม่เห็นบรรทัดนี้ อย่าจดเรื่องทั่วไปที่ไม่สำคัญ`
+            ].join('\n')
+          : s.systemPrompt;  // ไม่อ่านความทรงจำ = ประหยัด token
 
         let reply = await ollamaChat({
-          model: s.model,
-          num_ctx: s.num_ctx,
-          messages: [{ role: 'system', content: sys }, ...messages]
+          model: s.model, num_ctx: s.num_ctx,
+          messages: [{ role: 'system', content: sys }, ...chat.messages]
         });
 
-        // ตัด <think> ที่อาจหลุดมา
         reply = reply.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<\/?think>/gi, '');
-        // ดึง [[JOT: ...]] ออกไปบันทึก แล้วลบออกจากคำตอบที่แสดง
-        const jots = [...reply.matchAll(/\[\[JOT:\s*([^\]]+)\]\]/gi)].map(m => m[1]);
-        jots.forEach(t => jotMemory(me, t));
+        let jots = [];
+        if (useMem) {   // จดความทรงจำเฉพาะแชตที่เปิดใช้สมุด
+          jots = [...reply.matchAll(/\[\[JOT:\s*([^\]]+)\]\]/gi)].map(m => m[1]);
+          jots.forEach(t => jotMemory(me, t));
+        }
         reply = reply.replace(/\[\[JOT:[^\]]*\]\]/gi, '').trim();
-        // กันคำตอบว่าง (โมเดลบางทีตอบมาแค่ JOT)
         if (!reply) reply = jots.length ? 'รับทราบครับ จดใส่สมุดความทรงจำให้แล้ว ✅' : '(ไม่มีคำตอบ ลองพิมพ์ใหม่อีกครั้งครับ)';
+
+        chat.messages.push({ role: 'assistant', content: reply });
+        // ตั้งชื่อแชตอัตโนมัติจากข้อความแรก
+        if (chat.title === 'แชตใหม่') chat.title = String(content).replace(/\s+/g, ' ').trim().slice(0, 30);
+        writeChat(me, chat);
 
         return sendJSON(res, 200, { reply, jotted: jots.length });
       }
