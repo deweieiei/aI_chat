@@ -143,6 +143,42 @@ async function ollamaChat({ model, messages, num_ctx }) {
   return data.message ? data.message.content : '';
 }
 
+// ---------- โหลดโมเดล (pull) พร้อมติดตามความคืบหน้า ----------
+const pullStatus = new Map(); // name -> { percent, status, done, error }
+async function pullModel(name) {
+  pullStatus.set(name, { percent: 0, status: 'กำลังเริ่ม...', done: false });
+  try {
+    const r = await fetch(OLLAMA + '/api/pull', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: name, stream: true })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        try {
+          const j = JSON.parse(line);
+          if (j.error) { pullStatus.set(name, { percent: 0, status: j.error, done: true, error: true }); return; }
+          const percent = (j.total && j.completed) ? Math.round(j.completed / j.total * 100) : (pullStatus.get(name)?.percent || 0);
+          pullStatus.set(name, { percent, status: j.status || '', done: false });
+        } catch { /* บรรทัดไม่สมบูรณ์ ข้าม */ }
+      }
+    }
+    pullStatus.set(name, { percent: 100, status: 'เสร็จแล้ว', done: true });
+  } catch (e) {
+    pullStatus.set(name, { percent: 0, status: 'ผิดพลาด: ' + e.message, done: true, error: true });
+  }
+}
+
 // ประมาณจำนวน token แบบเร็ว (คำนวณในเครื่องทันที ไม่ต้องเรียกโมเดล — สำคัญมากบน CPU)
 // ไทย tokenizer ซอยละเอียด ~1 token/2 อักขระ, อังกฤษ/อื่นๆ ~1 token/4 อักขระ
 function estimateTokens(text) {
@@ -210,10 +246,38 @@ const server = http.createServer(async (req, res) => {
         try {
           const r = await fetch(OLLAMA + '/api/tags');
           const d = await r.json();
-          return sendJSON(res, 200, { models: (d.models || []).map(m => m.name) });
+          const models = (d.models || []).map(m => ({ name: m.name, size: m.size || 0 }));
+          return sendJSON(res, 200, { models });
         } catch {
           return sendJSON(res, 200, { models: [] });
         }
+      }
+      // เริ่มโหลดโมเดลใหม่ (ทำเบื้องหลัง แล้วให้ frontend ถามความคืบหน้า)
+      if (p === '/api/models/pull' && req.method === 'POST') {
+        const b = await readBody(req);
+        const n = String(b.name || '').trim();
+        if (!/^[a-zA-Z0-9._:\/-]{1,80}$/.test(n)) return sendJSON(res, 400, { error: 'ชื่อโมเดลไม่ถูกต้อง' });
+        const cur = pullStatus.get(n);
+        if (!cur || cur.done) pullModel(n);   // ไม่ await — คืนค่าทันที
+        return sendJSON(res, 200, { ok: true });
+      }
+      // ถามความคืบหน้าการโหลด
+      if (p === '/api/models/pull-status' && req.method === 'GET') {
+        const n = String(url.searchParams.get('name') || '').trim();
+        return sendJSON(res, 200, pullStatus.get(n) || { done: true, percent: 100, status: '' });
+      }
+      // ลบโมเดล
+      if (p === '/api/models/delete' && req.method === 'POST') {
+        const b = await readBody(req);
+        const n = String(b.name || '').trim();
+        if (!n) return sendJSON(res, 400, { error: 'ไม่ระบุชื่อโมเดล' });
+        const r = await fetch(OLLAMA + '/api/delete', {
+          method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: n })
+        });
+        if (!r.ok) return sendJSON(res, 500, { error: 'ลบไม่สำเร็จ (' + r.status + ')' });
+        pullStatus.delete(n);
+        return sendJSON(res, 200, { ok: true });
       }
 
       // อ่าน/บันทึกการตั้งค่า

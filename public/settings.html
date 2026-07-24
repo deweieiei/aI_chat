@@ -31,6 +31,21 @@
     </div>
   </div>
 
+  <!-- จัดการโมเดล -->
+  <div class="panel">
+    <h3 style="margin-top:0">🧩 จัดการโมเดล</h3>
+    <p class="sub" style="margin-top:2px">พิมพ์ชื่อโมเดลจาก <a href="https://ollama.com/library" target="_blank" rel="noopener">ollama.com/library</a> แล้วกดโหลด (เช่น <code>llama3.1:8b</code>, <code>gemma3:4b</code>, <code>qwen3:8b</code>)</p>
+    <div class="row">
+      <input type="text" id="pullName" placeholder="ชื่อโมเดล เช่น llama3.1:8b">
+      <button class="btn" id="pullBtn">⬇️ โหลด</button>
+    </div>
+    <div id="pullProgress" style="display:none; margin-top:12px">
+      <div class="bar"><i id="pullBar" style="width:0%"></i></div>
+      <p class="meta" style="color:var(--muted);font-size:13px" id="pullLabel"></p>
+    </div>
+    <div id="modelList" style="margin-top:14px"></div>
+  </div>
+
   <!-- ความทรงจำ -->
   <div class="panel">
     <h3 style="margin-top:0">📓 สมุดความทรงจำ</h3>
@@ -60,24 +75,83 @@ let numCtx = 4096;
 
 document.getElementById('logout').onclick = e => { e.preventDefault(); localStorage.clear(); location.href='/'; };
 
+let currentModel = 'qwen3:8b';
+function fmtSize(b){ return b ? (b/1e9).toFixed(1) + ' GB' : ''; }
+
 async function loadSettings(){
-  const [sRes, mRes] = await Promise.all([
-    fetch('/api/settings', { headers:H }),
-    fetch('/api/models', { headers:H })
-  ]);
+  const sRes = await fetch('/api/settings', { headers:H });
   if (sRes.status === 401) { localStorage.clear(); location.href='/'; return; }
   const s = await sRes.json();
-  const { models } = await mRes.json();
   numCtx = s.num_ctx;
-  const sel = document.getElementById('model');
-  sel.innerHTML = '';
-  const list = models.length ? models : [s.model];
-  list.forEach(m => {
-    const o = document.createElement('option'); o.value=m; o.textContent=m;
-    if (m===s.model) o.selected=true; sel.appendChild(o);
-  });
+  currentModel = s.model;
   document.getElementById('num_ctx').value = s.num_ctx;
   document.getElementById('systemPrompt').value = s.systemPrompt;
+  await loadModels();
+}
+
+// ดึงรายชื่อโมเดล -> เติมทั้ง dropdown และรายการจัดการ (ลบได้)
+async function loadModels(){
+  const { models } = await (await fetch('/api/models', { headers:H })).json();
+  const names = models.map(m => m.name);
+  // dropdown
+  const sel = document.getElementById('model');
+  sel.innerHTML = '';
+  (names.length ? names : [currentModel]).forEach(n => {
+    const o = document.createElement('option'); o.value=n; o.textContent=n;
+    if (n===currentModel) o.selected=true; sel.appendChild(o);
+  });
+  // รายการจัดการ
+  const listEl = document.getElementById('modelList');
+  listEl.innerHTML = '';
+  if (!models.length) { listEl.innerHTML = '<p class="meta" style="color:var(--muted)">ยังไม่มีโมเดล</p>'; return; }
+  models.forEach(m => {
+    const row = document.createElement('div');
+    row.className = 'file-row';
+    row.innerHTML = `<div>🧠 ${m.name}<span class="meta">${fmtSize(m.size)}</span></div><div class="row"></div>`;
+    const del = document.createElement('button'); del.className='btn danger'; del.textContent='ลบ';
+    del.onclick = () => deleteModel(m.name);
+    row.querySelector('.row').appendChild(del);
+    listEl.appendChild(row);
+  });
+}
+
+async function deleteModel(name){
+  if (!confirm('ลบโมเดล "' + name + '" ออกจากเครื่อง?')) return;
+  const r = await fetch('/api/models/delete', { method:'POST', headers:H, body: JSON.stringify({ name }) });
+  const d = await r.json();
+  if (!r.ok) { alert(d.error || 'ลบไม่สำเร็จ'); return; }
+  loadModels();
+}
+
+let pollTimer = null;
+async function pullModel(){
+  const name = document.getElementById('pullName').value.trim();
+  if (!name) return;
+  const prog = document.getElementById('pullProgress');
+  const bar = document.getElementById('pullBar');
+  const label = document.getElementById('pullLabel');
+  prog.style.display = 'block';
+  bar.style.width = '0%'; label.textContent = 'กำลังเริ่ม...';
+  document.getElementById('pullBtn').disabled = true;
+  const r = await fetch('/api/models/pull', { method:'POST', headers:H, body: JSON.stringify({ name }) });
+  const d = await r.json();
+  if (!r.ok) { label.textContent = '⚠️ ' + (d.error || 'เริ่มโหลดไม่สำเร็จ'); document.getElementById('pullBtn').disabled=false; return; }
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    const st = await (await fetch('/api/models/pull-status?name=' + encodeURIComponent(name), { headers:H })).json();
+    bar.style.width = (st.percent || 0) + '%';
+    label.textContent = (st.error ? '⚠️ ' : '') + (st.status || '') + (st.percent ? ' (' + st.percent + '%)' : '');
+    if (st.done) {
+      clearInterval(pollTimer);
+      document.getElementById('pullBtn').disabled = false;
+      if (!st.error) {
+        label.textContent = '✅ โหลด ' + name + ' เสร็จแล้ว';
+        document.getElementById('pullName').value = '';
+        loadModels();
+        setTimeout(()=>{ prog.style.display='none'; }, 2500);
+      }
+    }
+  }, 1000);
 }
 
 async function saveSettings(){
@@ -151,6 +225,8 @@ async function deleteFile(name){
 }
 
 document.getElementById('saveBtn').onclick = saveSettings;
+document.getElementById('pullBtn').onclick = pullModel;
+document.getElementById('pullName').addEventListener('keydown', e => { if(e.key==='Enter') pullModel(); });
 loadSettings().then(loadMemory);
 </script>
 </body>
