@@ -17,17 +17,19 @@
 
 <div class="layout">
   <!-- แถบด้านข้าง: รายการแชต -->
-  <div class="sidebar">
+  <div class="sidebar" id="sidebar">
     <button class="btn newchat" id="newChat">+ แชตใหม่</button>
     <div class="chat-list" id="chatList"></div>
   </div>
+  <div class="sidebar-backdrop" id="sbBackdrop"></div>
 
   <!-- พื้นที่แชต -->
   <div class="chat-main">
     <div class="chat-header">
+      <button class="menu-btn" id="menuBtn" title="รายการแชต">☰</button>
       <span class="ctitle" id="chatTitle">—</span>
       <span class="toggle" id="memToggle" title="ถ้าปิด จะไม่อ่านสมุดความทรงจำในแชตนี้ ช่วยประหยัด token">
-        📓 อ่านสมุดความทรงจำ
+        📓 <span class="toggle-text">อ่านสมุดความทรงจำ</span>
         <span class="switch" id="memSwitch"><i></i></span>
       </span>
     </div>
@@ -87,6 +89,16 @@ async function loadChatList(){
   });
 }
 
+// ---------- เมนู sidebar (มือถือ) ----------
+function toggleSidebar(open){
+  const sb = document.getElementById('sidebar'), bd = document.getElementById('sbBackdrop');
+  const show = open === undefined ? !sb.classList.contains('open') : open;
+  sb.classList.toggle('open', show);
+  bd.classList.toggle('show', show);
+}
+document.getElementById('menuBtn').onclick = () => toggleSidebar();
+document.getElementById('sbBackdrop').onclick = () => toggleSidebar(false);
+
 // ---------- เปิดแชต ----------
 async function openChat(id){
   const { chat } = await api('/api/chats/get?id=' + encodeURIComponent(id));
@@ -97,6 +109,7 @@ async function openChat(id){
   if (!chat.messages.length) addBubble('ai', 'สวัสดีครับ ' + displayName + ' 👋 มีอะไรให้ช่วยไหมครับ?');
   else chat.messages.forEach(m => addBubble(m.role === 'user' ? 'user' : 'ai', m.content));
   loadChatList();
+  toggleSidebar(false);   // เลือกแชตแล้วปิดเมนูบนมือถือ
 }
 
 async function newChat(){
